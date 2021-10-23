@@ -20,14 +20,17 @@ import random
 
 def make_parser():
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument('-w','--wide-algo', type=str, default = "", choices=["", "only_wide"], help =' only_wide - can stay near "wide" jetbridge stands')
+    parser.add_argument('-w','--wide-algo', type=str, default = "", choices=["", "only_wide","wide_first"], help =' only_wide - can stay near "wide" jetbridge stands')
     parser.add_argument('-c','--case', type=int, default = 1, choices=[1,2,3], help =' case 1 - public, 2 - private, 3 - leaderbord ')
     parser.add_argument('-rm','--round-minutes', type=int, default = 1, help =' Minutes to round ')
     parser.add_argument('-sp','--soft-period', type=int, default = 50, help =' Soft period of slidig window which do not fix (in time ofr round minutes)')
+    parser.add_argument('-is','--initial-size', type=int, default = 100, help =' Additional size of first step')
     parser.add_argument('-s','--solver', type=str, default = "cbc", choices=["cbc", "gurobi"], help =' solver ')
     parser.add_argument('-st','--steps', type=int, default = 1, help =' number of steps of time window ')
     parser.add_argument('-clm','--cut-long-minutes', type=int, default = 0,  help =' cut from model long bus trips ')
     parser.add_argument('-b','--baseline', default = False,  action='store_true', help =' load base line instead of real file ')
+    parser.add_argument('-bt','--by_terminal', default = 0, type=int, help =' Decompose problem by terminal, if non zer - number of parts')
+    parser.add_argument('-bw','--backward', default = False,  action='store_true', help =' sliding window backward. not real case but here possible ')
     return parser
 
 
@@ -102,29 +105,200 @@ def find_stand(curint, aircraft_stands, f, gst, stands_intervals, timetablerow, 
             print("stand", st2, stands_intervals[st2])
     exit()
 
-def gen_wide_column(aircraft_stands, GSTANDS):
+def gen_wide_column(aircraft_stands, asgd, GSTANDS):
     wide=[]
+    wide2=[]
+    asi={}
+    ws1={1:0,2:0,3:0, 4:0, 5:0}
+    ws2={1:0,2:0,3:0, 4:0, 5:0}
+    terms = {}
     for i in range(aircraft_stands.shape[0]) :
         wide.append(False)
+        wide2.append(False)
+    stands=[]
     for gst in GSTANDS: 
-        stands=[]
         for stand in aircraft_stands.itertuples() :
+            st = stand.Index
             st = stand.Index
             if stand.Aircraft_Stand == gst :
                 stands.append(st)
-        #print("stands", sorted(stands))
-        for cst in sorted(stands) :
-            if not wide[(cst-1)]:
-                #print("cst", cst)
-                #wide_stands[cst] =1
-                wide[cst] = True
+                asi[st]= gst
+                terms[st] = stand.Terminal
+    print("stands", sorted(stands))
+    print(asi)
+    for cst in sorted(stands) :
+        if cst==0 or pd.isna(terms[cst-1]) or pd.isna(terms[cst]):#or asgd[cst-1].Terminal :
+            wide[cst] = True
+            wide2[cst] = True
+        elif not wide[(cst-1)] :
+            t= int(terms[cst])
+            wide[cst]= True
+            wide2[cst]= False
+            gst=asi[st]
+            print(t, cst, asgd[gst])
+            ws1[t] += asgd[gst]["t%d"%t]
+        else :
+            wide[cst]= False
+            wide2[cst]= True
+            t= int(terms[cst])
+            gst=asi[st]
+            print(t, cst, asgd[gst])
+            ws2[t] += asgd[gst]["t%d" %t]
+
     for stand in aircraft_stands.itertuples() :
         if not stand.Terminal or pd.isna(stand.Terminal):
             wide[stand.Index] = True
-    print(wide)
-    return wide
+    #print(wide)
+    print("ws1", ws1)
+    print("ws2", ws2)
+    return wide2
 
 
+def calc_FST(timetable, asg, aircraft_classes,handling_time, handling_rates,  args):
+        F_AS_KEYS=[]
+        FAS_COST = {}
+        FAS_COST1 = {}
+        FAS_COST2 = {}
+        FAS_COST3 = {}
+        FAS_COST4 = {}
+        FAS_TIMES = {}
+        FAS_TIMES2 = {}
+        WIDE={}
+        if True:
+            for row in timetable.itertuples() :
+                print(row, row.flight_AD, row.tt_index)
+                flight_fit = False
+                ac = get_aircraft_class(row.flight_AC_PAX_capacity_total, aircraft_classes)
+                WIDE[row.tt_index] = ac =='Wide_Body'
+                if args.case <3  :#  or args.baseline:
+                    dt = datetime.datetime.strptime(row.flight_datetime, '%Y-%m-%d %H:%M:%S')
+                else :
+                    dt = datetime.datetime.strptime(row.flight_datetime, '%d.%m.%Y %H:%M')
+                flight_time = dt.hour*60 + dt.minute
+
+                for row2 in asg.itertuples() :
+                    fit = True
+                    cost = 0
+                    cost1 = 0
+                    cost2 = 0
+                    cost3 = 0
+                    cost4 = 0
+                    #key = (row.tt_index, row2.group_index)
+                    key = (row.tt_index, row2.Aircraft_Stand)
+                    start_time = 0
+                    use_time = 0
+                    if fit and row.Aircraft_Stand and not pd.isna(row.Aircraft_Stand):
+                        #print(row)
+                        #print(row.Aircraft_Stand)
+                        #print(row2.Index)
+                        if True:
+                            #fit = row.Aircraft_Stand  == row2.group_index
+                            fit = row.Aircraft_Stand  == row2.Aircraft_Stand  
+                    if fit: 
+                        print("row2", row2.Aircraft_Stand)
+
+                    if fit :
+                        fit_teletrap = row2.Terminal and not pd.isna(row2.Terminal)
+                        fit_teletrap = fit_teletrap and  row2.Terminal == row.flight_terminal_N
+
+                        if args.baseline : 
+                            if row.flight_AD=='A':
+                                fit_teletrap = fit_teletrap and row.flight_ID == row2.JetBridge_on_Arrival
+                            else :
+                                fit_teletrap = fit_teletrap and row.flight_ID == row2.JetBridge_on_Departure
+                        if  fit_teletrap : 
+                            #print("if1", fit, row.flight_ID)
+
+                            if not args.baseline : 
+                                if row.flight_AD=='A':
+                                    fit_teletrap = fit_teletrap and row.flight_ID == row2.JetBridge_on_Arrival
+                                else :
+                                    fit_teletrap = fit_teletrap and row.flight_ID == row2.JetBridge_on_Departure
+                                fit = fit and fit_teletrap
+                            
+
+                            #print("if2", fit, fit_teletrap)
+                            if fit and  row2.Terminal != row.flight_terminal_N: 
+                                print("wrong terminal")
+
+
+                            #print("if3", fit)
+                            if not args.baseline and WIDE[row.tt_index] :
+                                if fit and not row2.Wide :
+                                    print("removed fit because of wide", row.tt_index, row2.Index)
+                                fit = fit and row2.Wide
+                            #print("if4", fit)
+                            if args.wide_algo == "only_wide" and row2.Terminal and row2.Wide and not WIDE[row.tt_index] :
+                                print("only wide")
+                                fit = False
+                            #print("if5", fit)
+                            if fit :
+
+                                use_time =handling_time[ac]['JetBridge_Handling_Time']
+                                #print(row2)
+                                cost1 = handling_time[ac]['JetBridge_Handling_Time'] * handling_rates['JetBridge_Aircraft_Stand_Cost_per_Minute']['Value'] + 0.00
+                                #print("cost1", cost1)
+                                cost += cost1
+                        else :
+                            #print("else buses")
+                            if row2.Terminal and not pd.isna(row2.Terminal):
+                                cost1 = handling_time[ac]['Away_Handling_Time'] * handling_rates['JetBridge_Aircraft_Stand_Cost_per_Minute']['Value'] + 0.00
+                            else :
+                                cost3 = handling_time[ac]['Away_Handling_Time'] * handling_rates['Away_Aircraft_Stand_Cost_per_Minute']['Value']
+                            use_time =handling_time[ac]['Away_Handling_Time']
+                            n_buses = math.ceil(row.flight_PAX/80.0)
+                            bus_minutes =0 
+                            if row.flight_terminal_N == 1:
+                                bus_minutes = row2.t1
+                            elif row.flight_terminal_N == 2:
+                                bus_minutes = row2.t2
+                            elif row.flight_terminal_N == 3:
+                                bus_minutes = row2.t3
+                            elif row.flight_terminal_N == 4:
+                                bus_minutes = row2.t4
+                            elif row.flight_terminal_N == 5:
+                                bus_minutes = row2.t5
+                            else :
+                                print("didt found terminal", row.flight_terminal)
+                                exit()
+                            cost4 = n_buses * bus_minutes * handling_rates['Bus_Cost_per_Minute']['Value']
+                            #print("cost3 cost4", cost3, cost4)
+                            cost += cost1 + cost3 + cost4
+                            
+                            if args.cut_long_minutes and  bus_minutes >=args.cut_long_minutes:
+                                print("remove long minutes bus")
+                                fit = False
+
+                    #print("fit4", fit)
+                    if fit : 
+                        if row.flight_AD=='A':
+                            start_time = flight_time + row2.Taxiing_Time
+                        elif row.flight_AD=='D':
+                            start_time = flight_time - row2.Taxiing_Time - use_time
+
+
+
+                        cost2 = row2.Taxiing_Time * handling_rates['Aircraft_Taxiing_Cost_per_Minute']['Value']
+                        cost += cost2
+                        #print("cost2", cost2)
+                        F_AS_KEYS.append (key)
+                        FAS_COST[key] = int(cost)
+                        FAS_COST1[key] = int(cost1)
+                        FAS_COST2[key] = int(cost2)
+                        FAS_COST3[key] = int(cost3)
+                        FAS_COST4[key] = int(cost4)
+                        print("add key", key, "costs", cost1, cost2, cost3, cost4) # , row ,row2)
+
+                        FAS_TIMES[key] =(int( math.floor(start_time/args.round_minutes)), int( math.floor((start_time + use_time)/args.round_minutes)) )
+                        FAS_TIMES2[key] =(int( math.floor(start_time)), int( math.floor((start_time + use_time))) )
+                        print ("fas times", FAS_TIMES[key])
+                        flight_fit = True
+                if not flight_fit:
+                    print("Error, totaly remoed flight", row)
+                    exit()
+
+        print("finish FST")
+        return (F_AS_KEYS, FAS_COST, FAS_COST1, FAS_COST2, FAS_COST3, FAS_COST4, FAS_TIMES, FAS_TIMES2, WIDE)
 def main():
 
     parser = make_parser()
@@ -234,7 +408,9 @@ def main():
     ### no groups
     GSTANDS = list(set(aircraft_stands.Aircraft_Stand))
     STANDS = list(range(aircraft_stands.shape[0]))
-    wide_column = gen_wide_column(aircraft_stands, GSTANDS)
+    asg = aircraft_stands
+    asgd = asg.set_index('Aircraft_Stand').T.to_dict()
+    wide_column = gen_wide_column(aircraft_stands, asgd, GSTANDS)
     aircraft_stands= aircraft_stands.assign(Wide = wide_column)
 
     asg = aircraft_stands
@@ -248,163 +424,61 @@ def main():
     #aircraft_stands.to_csv("as.csv", sep=";")
     print(aircraft_stands.columns)
     
+    last_moment_column = np.zeros(timetable_main.shape[0])
+    (F_AS_KEYS, FAS_COST, FAS_COST1, FAS_COST2, FAS_COST3, FAS_COST4, FAS_TIMES, FAS_TIMES2, WIDE) = calc_FST(timetable_main, asg, aircraft_classes,handling_time, handling_rates,  args)
 
-    for step in range(args.steps):
+    if args.backward: 
+        for (f,st) in FAS_TIMES:
+            last_moment_column[f] = max( last_moment_column[f], - FAS_TIMES[f, st][0])
+    else :
+
+        for (f,st) in FAS_TIMES:
+            last_moment_column[f] = max( last_moment_column[f], FAS_TIMES[f, st][1])
+
+    timetable_main = timetable_main.assign(last_moment = last_moment_column).sort_values(by= 'last_moment')
+    #timetable_main.to_csv("tt_sorted.csv", sep=";")
+    #print("savd sorted")
+    firststep =0
+    if args.wide_algo == "wide_first":
+        firststep = -1
+    steps= args.steps
+    if args.by_terminal :
+        steps = args.by_terminal*5
+
+    for step in range(firststep, args.steps):
     #for step in range(1):
 
-        initial_size= 80
         last_step = step == args.steps -1
         l= timetable_main.shape[0]
-        ttstart = int (step * (l-initial_size)/args.steps)
-        ttstart= 0 
-        ttfinish = min( initial_size + int ((step+1) * (l-initial_size)/args.steps), l)
+        ttn=[1,2,3,5]
+        if args.by_terminal :
+            tstep=step//2
+            if step < 4*args.by_terminal : 
 
-        print("tt start finish", ttstart, ttfinish, l)
-        
-        #timetable = timetable_main.sort_values(by='flight_datetime')[int (step * l/args.steps):int( (step+1)* l /args.steps)].reset_index()
-        timetable = timetable_main.sort_values(by='flight_datetime')[ttstart:ttfinish].reset_index()
-        timetable.to_csv("tt%d.csv" % step, sep=";")
+                print(timetable_main.shape)
+
+                timetable = timetable_main[timetable_main['flight_terminal_N'] == ttn[step]] 
+                timetable = timetable.sort_values(by='flight_datetime')[ttstart:ttfinish].reset_index()
+                print(timetable_main.shape)
+                print(timetable.shape)
+            else :
+                timetable = timetable_main
+        else  :
+            if step >=0 :
+                ttstart = int (step * (l-args.initial_size)/args.steps)
+                ttstart= 0 
+                ttfinish = min( args.initial_size + int ((step+1) * (l- args.initial_size)/args.steps), l)
+
+                print("tt start finish", ttstart, ttfinish, l)
+                
+                #timetable = timetable_main.sort_values(by='flight_datetime')[int (step * l/args.steps):int( (step+1)* l /args.steps)].reset_index()
+                timetable = timetable_main.sort_values(by='flight_datetime')[ttstart:ttfinish].reset_index()
+            else : 
+                timetable = timetable_main[timetable_main['flight_AC_PAX_capacity_total'] > 220] 
+
         print("data loaded")
-        F_AS_KEYS=[]
-        FAS_COST = {}
-        FAS_COST1 = {}
-        FAS_COST2 = {}
-        FAS_COST3 = {}
-        FAS_COST4 = {}
-        FAS_TIMES = {}
-        WIDE={}
-        if True:
-            for row in timetable.itertuples() :
-                #print(i, row, row.flight_AD, row.tt_index)
-                flight_fit = False
-                ac = get_aircraft_class(row.flight_AC_PAX_capacity_total, aircraft_classes)
-                WIDE[row.tt_index] = ac =='Wide_Body'
-                if args.case <3  :#  or args.baseline:
-                    dt = datetime.datetime.strptime(row.flight_datetime, '%Y-%m-%d %H:%M:%S')
-                else :
-                    dt = datetime.datetime.strptime(row.flight_datetime, '%d.%m.%Y %H:%M')
-                flight_time = dt.hour*60 + dt.minute
 
-                for row2 in asg.itertuples() :
-                    fit = True
-                    cost = 0
-                    cost1 = 0
-                    cost2 = 0
-                    cost3 = 0
-                    cost4 = 0
-                    #key = (row.tt_index, row2.group_index)
-                    key = (row.tt_index, row2.Aircraft_Stand)
-                    start_time = 0
-                    use_time = 0
-                    if fit and row.Aircraft_Stand and not pd.isna(row.Aircraft_Stand):
-                        #print(row)
-                        #print(row.Aircraft_Stand)
-                        #print(row2.Index)
-                        if True:
-                            #fit = row.Aircraft_Stand  == row2.group_index
-                            fit = row.Aircraft_Stand  == row2.Aircraft_Stand  
-                    if fit: 
-                        print("row2", row2.Aircraft_Stand)
-
-                    if fit :
-                        fit_teletrap = row2.Terminal and not pd.isna(row2.Terminal)
-                        fit_teletrap = fit_teletrap and  row2.Terminal == row.flight_terminal_N
-
-                        if args.baseline : 
-                            if row.flight_AD=='A':
-                                fit_teletrap = fit_teletrap and row.flight_ID == row2.JetBridge_on_Arrival
-                            else :
-                                fit_teletrap = fit_teletrap and row.flight_ID == row2.JetBridge_on_Departure
-                        if  fit_teletrap : 
-                            print("if1", fit, row.flight_ID)
-
-                            if not args.baseline : 
-                                if row.flight_AD=='A':
-                                    fit_teletrap = fit_teletrap and row.flight_ID == row2.JetBridge_on_Arrival
-                                else :
-                                    fit_teletrap = fit_teletrap and row.flight_ID == row2.JetBridge_on_Departure
-                                fit = fit and fit_teletrap
-                            
-
-                            print("if2", fit, fit_teletrap)
-                            if fit and  row2.Terminal != row.flight_terminal_N: 
-                                print("wrong terminal")
-
-
-                            print("if3", fit)
-                            if not args.baseline and WIDE[row.tt_index] :
-                                if fit and not row2.Wide :
-                                    print("removed fit because of wide", row.tt_index, row2.Index)
-                                fit = fit and row2.Wide
-                            print("if4", fit)
-                            if args.wide_algo == "only_wide" and row2.Terminal and row2.Wide and not WIDE[row.tt_index] :
-                                print("only wide")
-                                fit = False
-                            print("if5", fit)
-                            if fit :
-
-                                use_time =handling_time[ac]['JetBridge_Handling_Time']
-                                #print(row2)
-                                cost1 = handling_time[ac]['JetBridge_Handling_Time'] * handling_rates['JetBridge_Aircraft_Stand_Cost_per_Minute']['Value'] + 0.00
-                                #print("cost1", cost1)
-                                cost += cost1
-                        else :
-                            print("else buses")
-                            if row2.Terminal and not pd.isna(row2.Terminal):
-                                cost1 = handling_time[ac]['Away_Handling_Time'] * handling_rates['JetBridge_Aircraft_Stand_Cost_per_Minute']['Value'] + 0.00
-                            else :
-                                cost3 = handling_time[ac]['Away_Handling_Time'] * handling_rates['Away_Aircraft_Stand_Cost_per_Minute']['Value']
-                            use_time =handling_time[ac]['Away_Handling_Time']
-                            n_buses = math.ceil(row.flight_PAX/80.0)
-                            bus_minutes =0 
-                            if row.flight_terminal_N == 1:
-                                bus_minutes = row2.t1
-                            elif row.flight_terminal_N == 2:
-                                bus_minutes = row2.t2
-                            elif row.flight_terminal_N == 3:
-                                bus_minutes = row2.t3
-                            elif row.flight_terminal_N == 4:
-                                bus_minutes = row2.t4
-                            elif row.flight_terminal_N == 5:
-                                bus_minutes = row2.t5
-                            else :
-                                print("didt found terminal", row.flight_terminal)
-                                exit()
-                            cost4 = n_buses * bus_minutes * handling_rates['Bus_Cost_per_Minute']['Value']
-                            #print("cost3 cost4", cost3, cost4)
-                            cost += cost1 + cost3 + cost4
-                            
-                            if args.cut_long_minutes and  bus_minutes >=args.cut_long_minutes:
-                                print("remove long minutes bus")
-                                fit = False
-
-                    #print("fit4", fit)
-                    if fit : 
-                        if row.flight_AD=='A':
-                            start_time = flight_time + row2.Taxiing_Time
-                        elif row.flight_AD=='D':
-                            start_time = flight_time - row2.Taxiing_Time - use_time
-
-
-
-                        cost2 = row2.Taxiing_Time * handling_rates['Aircraft_Taxiing_Cost_per_Minute']['Value']
-                        cost += cost2
-                        #print("cost2", cost2)
-                        F_AS_KEYS.append (key)
-                        FAS_COST[key] = int(cost)
-                        FAS_COST1[key] = int(cost1)
-                        FAS_COST2[key] = int(cost2)
-                        FAS_COST3[key] = int(cost3)
-                        FAS_COST4[key] = int(cost4)
-                        print("add key", key, "costs", cost1, cost2, cost3, cost4 , row ,row2)
-                        FAS_TIMES[key] =(int( math.floor(start_time/args.round_minutes)), int( math.floor((start_time + use_time)/args.round_minutes)) )
-                        print ("fas times", FAS_TIMES[key])
-                        flight_fit = True
-                if not flight_fit:
-                    print("Error, totaly remoed flight", row)
-                    exit()
-
-
+        (F_AS_KEYS, FAS_COST, FAS_COST1, FAS_COST2, FAS_COST3, FAS_COST4, FAS_TIMES, FAS_TIMES2, WIDE) = calc_FST(timetable, asg, aircraft_classes, handling_time, handling_rates, args)
         print("len F_AS_KEYS", len (F_AS_KEYS))
         a=list (set([t[0] for t in FAS_TIMES.values()] + [t[1] for t in FAS_TIMES.values()] ))
 
@@ -436,8 +510,8 @@ def main():
         model.cons4 = ConstraintList()
         expr = {}
         for ik, (f, gst) in enumerate(F_AS_KEYS) :
-            if ik%10000 == 0 :
-                print("ik", ik, f, gst, time.time() - start)
+            #if ik%10000 == 0 :
+            #    print("ik", ik, f, gst, time.time() - start)
             if f not in expr: 
                 expr[f] = 0
             expr[f] +=model.flight2stand[ f, gst]
@@ -448,8 +522,8 @@ def main():
 
         if False : ## without groups
             for (i1, (f1, st1)) in enumerate(F_AS_KEYS) :
-                if i1%100 == 0 :
-                    print("without groups", i1)
+                #if i1%100 == 0 :
+                #    print("without groups", i1)
                 for (i2, (f2, st2)) in enumerate(F_AS_KEYS) :
                     if i2> i1 :
                         intersect = True
@@ -501,6 +575,8 @@ def main():
         model.write('test.lp')
         solver = SolverFactory(args.solver)
         solver.options['MipGap'] = 0.001
+        if args.solver == "cbc" :
+            solver.options['barr'] = ''
         
         results = solver.solve(model, tee=True)
         print("model solved")
@@ -575,8 +651,18 @@ def main():
                     st2 = find_stand(cur_interval, aircraft_stands, f, gst, stands_intervals, row, wide=WIDE[f], busy=(busy1, busy2, busy3), model= model) #WIDE[f])
                     #st2 = asgd[gst]['group_index_old']
                     st2 = gst
-                    if last_step or FAS_TIMES[ f, gst][1] < tmax - args.soft_period:
+                    if last_step :
                         result_st_column[f] = st2 
+                    elif not args.by_terminal and FAS_TIMES[ f, gst][1] < tmax - args.soft_period:
+                        result_st_column[f] = st2 
+                    elif args.by_terminal :
+                        if step >= 5: 
+                            result_st_column[f] = st2 
+                        elif not pd.isna(asgd[st2]["Terminal"]):
+                            print("check terminal", step+1, asgd[st2]["Terminal"])
+                            result_st_column[f] = st2 
+
+
                 timetable_main.Aircraft_Stand = result_st_column
 
     #print(len(result_st_column))
@@ -587,7 +673,8 @@ def main():
     #print(timetable.columns)
     timetable_main = timetable_main.astype({"Cost1": int, "Cost2": int, "Cost3" : int, "Cost4" : int,"Cost": int, "Start": int, "Finish": int})
     timetable_main = timetable_main.rename(columns={'flight_terminal_N': 'flight_terminal_#'})
-    fname= "result-%s.csv" % str(time.time())
+    total_cost = int(sum(result_cost_column))
+    fname= "result-%d.csv" % total_cost
     timetable_main.to_csv(fname, sep=",")
 
     f=open("stand_usage_report.txt","w")
@@ -601,6 +688,7 @@ def main():
     print("results checked and saved", time.time()- start)
     print("total cost", sum(result_cost_column))
     print("file name ", fname)
+    print("args", args)
                         
 
 
