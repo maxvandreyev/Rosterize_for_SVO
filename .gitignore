@@ -1,0 +1,6 @@
+.DS_Store
+.vagrant
+stand_usage_report.txt
+result-*.csv
+*.lp
+
