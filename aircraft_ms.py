@@ -445,24 +445,38 @@ def main():
     if args.by_terminal :
         steps = args.by_terminal*5
 
-    for step in range(firststep, args.steps):
+    for step in range(firststep, steps):
     #for step in range(1):
 
         last_step = step == args.steps -1
         l= timetable_main.shape[0]
         ttn=[1,2,3,5]
         if args.by_terminal :
-            tstep=step//2
-            if step < 4*args.by_terminal : 
+            tstep=step//args.by_terminal
+            istep = step%args.by_terminal
+            if tstep < 4 : 
 
-                print(timetable_main.shape)
+                print(timetable_main.shape, tstep, istep)
 
-                timetable = timetable_main[timetable_main['flight_terminal_N'] == ttn[step]] 
+                timetable = timetable_main[timetable_main['flight_terminal_N'] == ttn[tstep]] 
+                l= timetable.shape[0]
+                ttstart = int (istep * l/args.by_terminal)
+                ttstart= 0 
+                ttfinish = min( int ((istep+1) * (l)/args.by_terminal), l)
+
                 timetable = timetable.sort_values(by='flight_datetime')[ttstart:ttfinish].reset_index()
                 print(timetable_main.shape)
                 print(timetable.shape)
             else :
                 timetable = timetable_main
+
+                l= timetable.shape[0]
+                #ttstart = int (istep * l/args.by_terminal)
+                ttstart= 0 
+                ttfinish = min( int ((istep+1) * (l)/args.by_terminal), l)
+
+                timetable = timetable.sort_values(by='flight_datetime')[ttstart:ttfinish].reset_index()
+            print("tt shape", step, tstep, istep, timetable.shape)
         else  :
             if step >=0 :
                 ttstart = int (step * (l-args.initial_size)/args.steps)
@@ -656,16 +670,22 @@ def main():
                     elif not args.by_terminal and FAS_TIMES[ f, gst][1] < tmax - args.soft_period:
                         result_st_column[f] = st2 
                     elif args.by_terminal :
-                        if step >= 5: 
+                        tstep=step//args.by_terminal
+                        istep = step%args.by_terminal
+                        if tstep <4 and istep == args.by_terminal -1  and not pd.isna(asgd[st2]["Terminal"]) :
+                        #if istep == args.by_terminal -1  or (FAS_TIMES[ f, gst][1] < tmax - args.soft_period and not pd.isna(asgd[st2]["Terminal"]) ):
                             result_st_column[f] = st2 
-                        elif not pd.isna(asgd[st2]["Terminal"]):
-                            print("check terminal", step+1, asgd[st2]["Terminal"])
+
+                        elif tstep < 4 and istep < args.by_terminal -1  or (FAS_TIMES[ f, gst][1] < tmax - args.soft_period and not pd.isna(asgd[st2]["Terminal"]) ):
+                            result_st_column[f] = st2 
+                        elif tstep == 4 and istep < args.by_terminal -1  or (FAS_TIMES[ f, gst][1] < tmax - args.soft_period ):
                             result_st_column[f] = st2 
 
 
                 timetable_main.Aircraft_Stand = result_st_column
 
-    #print(len(result_st_column))
+
+                print(len(result_st_column))
     #print(timetable.shape[0])
     #print(timetable.Aircraft_Stand)
     timetable_main.Aircraft_Stand = result_st_column
